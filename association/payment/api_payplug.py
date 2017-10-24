@@ -1,5 +1,6 @@
 import payplug
 import datetime
+import uuid
 
 from account.models import PaymentsUser, SaveCardUser, User
 
@@ -17,23 +18,23 @@ def create_classic_payment_url(user, subscription, product, data=None):
     :return: A redirect url to Payplug
     """
     var = True if product.recurrent else False
+    token = uuid.uuid4()
     payment_data = {
         'amount': int(product.price * 100),  # In cents, 1 euro minimum
         'customer': {'email': str(user.email)},
         'save_card': var,
         'currency': 'EUR',
         'metadata': {
-            'customer_id': user.id,
+            'token': token.hex,
         },
     }
-
     if data:
         payment_data.update(data)
 
     duration = datetime.date.today() + datetime.timedelta(product.duration)
     payment = payplug.Payment.create(**payment_data)  # Create the payment object
     payment_user = PaymentsUser(reference=str(payment.id), subscription=subscription, product=product, user=user,
-                                price=product.price, tva=product.tva, subscribed_until=duration)
+                                price=product.price, tva=product.tva, subscribed_until=duration, token=token)
     payment_user.save()
     return payment.hosted_payment.payment_url
 
@@ -48,6 +49,7 @@ def make_recurring_payment(user, data=None):
     card_object = user.get_last_validate_card()
     product = user.get_product()
     subscription = user.get_subscription()
+    token = uuid.uuid4()
     if card_object is not None and product is not None and subscription is not None:
         payment_data = {
             'amount': int(product.price * 100),  # In cents, 1 euro minimum
@@ -57,27 +59,30 @@ def make_recurring_payment(user, data=None):
             'currency': 'EUR',
             'payment_method': str(card_object.card_id),
             'metadata': {
-                'customer_id': user.id,
+                'token': token.hex,
             },
         }
 
         if data:
             payment_data.update(data)
+
         duration = datetime.date.today() + datetime.timedelta(product.duration)
         payment = payplug.Payment.create(**payment_data)  # creation de l'object payment
-        payment_user = PaymentsUser(reference=str(payment.id), subscription=subscription, product=product, user=user,
-                                    price=product.price, tva=product.tva, subscribed_until=duration)
-        payment_user.save()
+        if payment.is_paid:
+            payment_user = PaymentsUser(reference=str(payment.id), subscription=subscription, product=product,
+                                        user=user, price=product.price, tva=product.tva, subscribed_until=duration,
+                                        token=token)
+            payment_user.save()
 
 
 def find_recurring_payments():
     today = datetime.date.today()
     try:
-        for user in User.objects.filter(accreditation=2, payments__subscribed_until__date=today,
+        for user in User.objects.filter(accreditation=2, payments__subscribed_until=today,
                                         payments__product__recurrent=True):
             make_recurring_payment(user)
-    except TypeError as e:
-        print(e)
+    except TypeError:
+        pass
 
 
 def update_user(response, user):
@@ -101,7 +106,7 @@ def save_card(response, user):
     :param user: The user related to the payment
     """
     try:
-        print(SaveCardUser.objects.get(card_id=response.card.id))
+        SaveCardUser.objects.get(card_id=response.card.id)
     except SaveCardUser.DoesNotExist:
         first_name = response.customer.first_name
         last_name = response.customer.last_name

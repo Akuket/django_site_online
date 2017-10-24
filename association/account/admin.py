@@ -43,7 +43,7 @@ class UserAdminNew(UserAdmin):
     def subscribed_until(self, user):
         payment = user.get_last_validate_payment()
         if payment is not None:
-            payment = payment.subscribed_until.date()
+            payment = payment.subscribed_until
             return payment
         return None
 

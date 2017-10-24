@@ -7,7 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from .api_payplug import create_classic_payment_url, update_user
 from .models import Subscription
 from account.api import accreditation_view_required
-from account.models import PaymentsUser, User
+from account.models import PaymentsUser
 
 
 @accreditation_view_required(redirect_url=reverse_lazy(u'login'))  # If connected and and has a confirmed email address
@@ -41,7 +41,10 @@ def payment_view(request, subscription, product):
     notification_url = request.build_absolute_uri(reverse("notifications"))
     hosted_payment = {'return_url': return_url, 'cancel_url': cancel_url}
 
-    subscription_object = Subscription.objects.get(name=subscription)
+    try:
+        subscription_object = Subscription.objects.get(name=subscription)
+    except Subscription.DoesNotExist:
+        return HttpResponseNotFound('<h1>Http 404</h1>')
 
     for products in subscription_object.products.all():  # Because many products for one subscription
         if products.name == product:
@@ -63,22 +66,25 @@ def notifications_payplug_view(request):
     status = None
     try:
         response = payplug.notifications.treat(request.body)  # Full api provide by payplug to manage the response
-    except payplug.exceptions.PayplugError as e:
-        raise e
+    except payplug.exceptions.PayplugError:
+        return HttpResponse(400)
     else:
-        user = User.objects.get(id=response.metadata["customer_id"])
         payment = PaymentsUser.objects.get(reference=str(response.id))
-
         if response.object == 'payment' and response.is_paid:  # Update user's subscription if the payment is done
-            status = "is_paid"
-            update_user(response=response, user=user)
+            if response.metadata["token"] == payment.token.hex:
+                status = "is_paid"
+                update_user(response=response, user=payment.user)
+
+            else:
+                status = str(401)
+                payment.error_message = str("Fraud_suspected")
 
         elif response.object == 'payment' and response.failure:  # An error is occurred
             status = str(response.failure.code)
             payment.error_message = str(response.failure.message)
 
-        elif response.object == 'refund':  # The refund method
-            pass
+        # elif response.object == 'refund':  # The refund method
+        #    pass
 
         payment.status = status
         payment.save()
@@ -97,5 +103,5 @@ def response_view(request):
     payment = request.user.get_last_payment()
     return render(request, template_name, {
         'status': payment.status,
-        'error_message': payment.status,
+        'error_message': payment.error_message,
     })
