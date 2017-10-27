@@ -8,10 +8,10 @@ from django.urls import reverse
 
 from .views import notifications_payplug_view
 from .models import Subscription, Product
-from .api_payplug import create_classic_payment_url, find_recurring_payments, make_recurring_payment
-from account.models import User
+from .api_payplug import create_classic_payment_url, find_recurring_payments, make_recurring_payment, checks
+from account.models import User, SaveCardUser
 
-Token = uuid.uuid4()
+Token = uuid.uuid4()  # Ensure transactions between us and payplug
 
 
 class MockResponse:
@@ -20,6 +20,9 @@ class MockResponse:
 
 
 def factory_response_payplug(data=None):
+    """
+    :return: An emulation of the api provided normally by payplug
+    """
     Card = namedtuple('Card', ("last4", "country", "exp_month", "exp_year", "brand", "id",))
     Customer = namedtuple('Customer',
                           ("address1", "address2", "city", "country", "email", "first_name", "last_name", "postcode"))
@@ -75,6 +78,9 @@ def factory_response_payplug(data=None):
 
 
 class TestSubscriptionView(TestCase):
+    """
+        Tests of view.py --> subscription_view()
+    """
     @classmethod
     def setUpTestData(cls):
         cls.user = User(username="guillaume", email="te@test.com", accreditation=1)
@@ -86,6 +92,8 @@ class TestSubscriptionView(TestCase):
                                recurrent=False, duration=50, subscription=subscription)
 
         cls.path = reverse(u"subscriptions")
+
+    # Accreditation tests
 
     def test_valid_accreditation_view(self):
         self.client.login(username="guillaume", password="passpass")
@@ -101,6 +109,8 @@ class TestSubscriptionView(TestCase):
         self.assertEqual(response.status_code, 302)
 
         self.user.refresh_from_db()
+
+    # Display tests
 
     def test_valid_subscription(self):
         self.client.login(username="guillaume", password="passpass")
@@ -119,6 +129,9 @@ class TestSubscriptionView(TestCase):
 
 
 class TestPaymentView(TestCase):
+    """
+        Tests of view.py --> payment_view()
+    """
     @classmethod
     def setUpTestData(cls):
         user = User(username="guillaume", email="te@test.com", accreditation=1)
@@ -131,6 +144,8 @@ class TestPaymentView(TestCase):
 
         cls.path = reverse(u"payment", kwargs={"subscription": cls.subscription, "product": cls.product})
 
+    # Accreditation tests
+
     def test_error_accreditation_view(self):
         url = "%s?next=%s" % (reverse(u"login"), self.path)  # redirection url
         response = self.client.get(self.path)
@@ -138,12 +153,16 @@ class TestPaymentView(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, url)
 
+    # Standard behavior test
+
     def test_valid(self):
         self.client.login(username="guillaume", password="passpass")
         response = self.client.get(self.path)
 
         self.assertEqual(response.status_code, 302)
         self.assertIn("https://secure.payplug.com/pay/test/", response.url)
+
+    # Errors tests
 
     def test_error_product(self):
         self.client.login(username="guillaume", password="passpass")
@@ -165,6 +184,9 @@ class TestPaymentView(TestCase):
 
 
 class TestReturnUrl(TestCase):
+    """
+         Tests of view.py --> notifications_payplug_view()
+    """
     @classmethod
     def setUpTestData(cls):
         cls.user = User.objects.create(username="guillaume", email="test@test.com", password="passpass",
@@ -182,6 +204,9 @@ class TestReturnUrl(TestCase):
     def setUp(self):
         self.factory = RequestFactory()  # mock Request object for use in testing
 
+    # Standard behavior test
+    # by creating a mock response of payplug.notifications.treat in the notification url
+
     @patch('payplug.notifications.treat')
     def test_valid(self, treat_mock):
         payment = self.user.payments.order_by("-date")[0]
@@ -198,6 +223,9 @@ class TestReturnUrl(TestCase):
         self.assertEqual(self.user.accreditation, 2)
         self.assertEqual(payment.status, "is_paid")
         self.assertIs(payment.error_message, "")
+
+    # Payment failure test due to an error when paying
+    # by creating a mock response of payplug.notifications.treat in the notification url
 
     @patch('payplug.notifications.treat')
     def test_failure(self, treat_mock):
@@ -222,6 +250,9 @@ class TestReturnUrl(TestCase):
         self.assertEqual(payment.status, "aborted")
         self.assertEqual(payment.error_message, "You have aborted the transaction.")
 
+    # Fraud attempt prevention test
+    # by creating a mock response of payplug.notifications.treat in the notification url
+
     @patch('payplug.notifications.treat')
     def test_error_token(self, treat_mock):
         payment = self.user.payments.order_by("-date")[0]
@@ -242,6 +273,9 @@ class TestReturnUrl(TestCase):
         self.assertEqual(self.user.accreditation, 1)
         self.assertEqual(payment.status, "401")
         self.assertEqual(payment.error_message, "Fraud_suspected")
+
+    # Save card option tests
+    # by creating a mock response of payplug.notifications.treat in the notification url
 
     @patch('payplug.notifications.treat')
     def test_valid_with_save_card(self, treat_mock):
@@ -292,6 +326,9 @@ class TestReturnUrl(TestCase):
         self.assertEqual(payment.error_message, "You have aborted the transaction.")
         self.assertFalse(self.user.card.exists())
 
+    # Error behavior test
+    # by creating a mock response of payplug.notifications.treat in the notification url
+
     def test_error_payplug(self):
         request = self.factory.post(self.path)  # emulate the request
         response = notifications_payplug_view(request)
@@ -299,6 +336,9 @@ class TestReturnUrl(TestCase):
 
 
 class TestResponseView(TestCase):
+    """
+         Tests of view.py --> response_view()
+    """
     @classmethod
     def setUpTestData(cls):
         cls.user = User(username="guillaume", email="te@test.com", accreditation=1)
@@ -363,6 +403,9 @@ class TestResponseView(TestCase):
 
 
 class TestRecurringPayments(TestCase):
+    """
+       Tests of api_payplug.py --> find_recurring_payments() and make_recurring_payment()
+    """
     @classmethod
     def setUpTestData(cls):
         cls.user = User.objects.create(username="guillaume", email="test@test.com", password="passpass",
@@ -380,25 +423,16 @@ class TestRecurringPayments(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    @patch('payplug.notifications.treat')
-    def test_find_recurring_payment_and_pay_with_payplug(self, treat_mock):  # Needs to be online to try it.
-        payment = self.user.payments.order_by("-date")[0]
-        obj = MockResponse({
-            "id": payment.reference,
-            "save_card": True,
+    @patch("payplug.Payment.create")
+    def _payment(self, payment_mock, data=None):
+        _obj = MockResponse({
+            "id": "pay_4qjehvWWerokJFm76S9MnJ",
         })
-        treat_mock.return_value = obj
-        request = self.factory.post(self.path)
-        notifications_payplug_view(request)
+        payment_mock.return_value = _obj
+        make_recurring_payment(user=self.user, data=data)
 
-        payment.refresh_from_db()
-        payment.subscribed_until = datetime.date.today()
-        payment.save()
-
-        find_recurring_payments()
-
-        new_payment = self.user.payments.order_by("-id")[0]
-        self.assertNotEqual(new_payment.id, payment.id)
+    # This part makes tests of the function make_recurring_payment() without using find_recurring_payments()
+    # by creating a mock response of payplug.notifications.treat in the notification url
 
     @patch('payplug.notifications.treat')
     def test_recurring_payment(self, treat_mock):  # Not needs to be online.
@@ -435,10 +469,138 @@ class TestRecurringPayments(TestCase):
         new_payment = self.user.payments.order_by("-id")[0]
         self.assertEqual(new_payment.id, payment.id)
 
-    @patch("payplug.Payment.create")
-    def _payment(self, payment_mock):
-        _obj = MockResponse({
-            "id": "pay_4qjehvWWerokJFm76S9MnJ",
+    @patch('payplug.notifications.treat')
+    def test_make_recurring_payment_with_data(self, treat_mock):
+        payment = self.user.payments.order_by("-date")[0]
+        obj = MockResponse({
+            "id": payment.reference,
+            "save_card": True,
+
         })
-        payment_mock.return_value = _obj
-        make_recurring_payment(user=self.user)
+        treat_mock.return_value = obj
+        request = self.factory.post(self.path)
+        notifications_payplug_view(request)
+
+        payment.refresh_from_db()
+        data = {
+            "cancel_url": "https://example.net/cancel?id=42",
+            "paid_at": None,
+            "payment_url": "https://www.payplug.com/pay/test/2DNkjF024bcLFhTn7OBfcc",
+            "return_url": "https://example.net/success?id=42",
+        }
+        self._payment(data=data)
+
+        new_payment = self.user.payments.order_by("-id")[0]
+        self.assertNotEqual(new_payment.id, payment.id)
+
+    # Next part makes tests of the function find_recurring_payments()
+    # by creating a mock response of payplug.notifications.treat in the notification url
+    # then make the payment
+
+    @patch('payplug.notifications.treat')
+    def test_find_recurring_payment_and_pay_with_payplug(self, treat_mock):  # Needs to be online to try it.
+        payment = self.user.payments.order_by("-date")[0]
+        obj = MockResponse({
+            "id": payment.reference,
+            "save_card": True,
+        })
+        treat_mock.return_value = obj
+        request = self.factory.post(self.path)
+        notifications_payplug_view(request)
+
+        payment.refresh_from_db()
+        payment.subscribed_until = datetime.date.today()
+        payment.save()
+
+        find_recurring_payments()
+
+        new_payment = self.user.payments.order_by("-id")[0]
+        self.assertNotEqual(new_payment.id, payment.id)
+
+
+class TestApiChecks(TestCase):
+    """
+        Tests of api_payplug.py --> chechs()
+    """
+    @classmethod
+    def setUpTestData(cls):
+        cls.user1 = User.objects.create(username="c", email="test@test.com", password="passpass", accreditation=2)
+        cls.user2 = User.objects.create(username="g", email="test1@test1.com", password="passpass", accreditation=1)
+        cls.subscription = Subscription.objects.create(name="gold", description="test")
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch('payplug.notifications.treat')
+    def create_payment(self, treat_mock, user=None, date=50):
+        product = Product.objects.create(name="test", description="rien", price=120, tva=20, ht=100,
+                                         recurrent=True, duration=date, subscription=self.subscription)
+        create_classic_payment_url(user=user, subscription=self.subscription, product=product)
+        self.payment = user.payments.all().order_by("-id")[0]
+        self.payment.token = Token
+        self.payment.save()
+
+        obj = MockResponse({
+            "id": self.payment.reference,
+        })
+        treat_mock.return_value = obj
+
+        request = self.factory.post(reverse(u"notifications"))
+        notifications_payplug_view(request)
+
+        user.refresh_from_db()
+        self.payment.refresh_from_db()
+
+    # Tests of SaveCardUser.objects.filter(card_available=True, card_exp_date__lt=today).update(card_available=False)
+    # with valid and invalid card and 2 users
+
+    def test_valid_save_card_user(self):
+        date = datetime.date.today() + datetime.timedelta(1)
+        card = SaveCardUser.objects.create(first_name="g", last_name="t", card_id="g", card_exp_date=date,
+                                           card_available=True, user=self.user1)
+        checks()
+        card.refresh_from_db()
+        self.assertIs(card.card_available, True)
+        self.assertFalse(self.user2.card.exists())
+
+    def test_invalid_save_card_user(self):
+        date = datetime.date.today() - datetime.timedelta(1)
+        card = SaveCardUser.objects.create(first_name="g", last_name="t", card_id="g", card_exp_date=date,
+                                           card_available=True, user=self.user1)
+        checks()
+        card.refresh_from_db()
+        self.assertIs(card.card_available, False)
+        self.assertFalse(self.user2.card.exists())
+
+    # Tests of User.objects.filter(accreditation=2, payments__subscribed_until__lt=today).update(accreditation=1)
+    # with several end dates of subscriptions for 2 users
+
+    def test_check_with_2_valids_subscriptions(self):
+        self.create_payment(user=self.user1)
+        self.create_payment(user=self.user2)
+        checks()
+        self.user1.refresh_from_db()
+        self.user2.refresh_from_db()
+
+        self.assertEqual(self.user1.accreditation, 2)
+        self.assertEqual(self.user2.accreditation, 2)
+
+    def test_check_with_invalid_and_valid__subscriptions(self):
+        self.create_payment(user=self.user1, date=-1)
+        self.create_payment(user=self.user2)
+        checks()
+        self.user1.refresh_from_db()
+        self.user2.refresh_from_db()
+
+        self.assertEqual(self.user1.accreditation, 1)
+        self.assertEqual(self.user2.accreditation, 2)
+
+    def test_check_with_invalids_subscriptions(self):
+        self.create_payment(user=self.user1, date=-1)
+        self.create_payment(user=self.user2, date=-1)
+        checks()
+        self.user1.refresh_from_db()
+        self.user2.refresh_from_db()
+
+        self.assertEqual(self.user1.accreditation, 1)
+        self.assertEqual(self.user2.accreditation, 1)

@@ -50,6 +50,7 @@ def make_recurring_payment(user, data=None):
     product = user.get_product()
     subscription = user.get_subscription()
     token = uuid.uuid4()
+
     if card_object is not None and product is not None and subscription is not None:
         payment_data = {
             'amount': int(product.price * 100),  # In cents, 1 euro minimum
@@ -123,5 +124,5 @@ def checks():
     Check user's accreditation on the site, based on subscription duration
     """
     today = datetime.date.today()
-    SaveCardUser.objects.filter(card_available=True, card_exp_date__date__lt=today).update(card_available=False)
-    User.objects.filter(accreditation=2, payments__subscribed_until__date__lt=today).update(accreditation=1)
+    SaveCardUser.objects.filter(card_available=True, card_exp_date__lt=today).update(card_available=False)
+    User.objects.filter(accreditation=2, payments__subscribed_until__lt=today).update(accreditation=1)
